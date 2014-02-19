@@ -3,18 +3,17 @@
 # Copyright (c) 2012 Geoffroy Gueguen <geoffroy.gueguen@gmail.com>
 # All Rights Reserved.
 #
-# Androguard is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Androguard is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with Androguard.  If not, see <http://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import sys
 sys.path.append('./')
@@ -56,8 +55,8 @@ class DvMethod():
         self.graph = None
 
         access = method.get_access_flags()
-        self.access = [flag for flag in util.ACCESS_FLAGS_METHODS
-                                     if flag & access]
+        self.access = [name for flag, name in
+                        util.ACCESS_FLAGS_METHODS.iteritems() if flag & access]
         desc = method.get_descriptor()
         self.type = util.get_type(desc.split(')')[-1])
         self.params_type = util.get_params_type(desc)
@@ -69,7 +68,7 @@ class DvMethod():
             logger.debug('No code : %s %s', self.name, self.cls_name)
         else:
             start = code.registers_size - code.ins_size
-            if 0x8 not in self.access:
+            if 'static' not in self.access:
                 self.var_to_name[start] = ThisParam(start, self.name)
                 self.lparams.append(start)
                 start += 1
@@ -79,7 +78,7 @@ class DvMethod():
                 self.lparams.append(param)
                 self.var_to_name.setdefault(param, Param(param, ptype))
                 num_param += util.get_type_size(ptype)
-        if 0:
+        if not __debug__:
             from androguard.core import bytecode
             bytecode.method2png('/tmp/dad/graphs/%s#%s.png' % \
                 (self.cls_name.split('/')[-1][:-1], self.name), methanalysis)
@@ -94,7 +93,7 @@ class DvMethod():
         graph = construct(self.start_block, self.var_to_name, self.exceptions)
         self.graph = graph
 
-        if 0:
+        if not __debug__:
             util.create_png(self.cls_name, self.name, graph, '/tmp/dad/blocks')
 
         defs, uses = build_def_use(graph, self.lparams)
@@ -115,7 +114,7 @@ class DvMethod():
         idoms = graph.immediate_dominators()
         identify_structures(graph, idoms)
 
-        if 0:
+        if not __debug__:
             util.create_png(self.cls_name, self.name, graph,
                                                     '/tmp/dad/structured')
 
@@ -156,7 +155,7 @@ class DvClass():
         self.inner = False
 
         access = dvclass.get_access_flags()
-        self.access = [util.ACCESS_FLAGS_CLASSES.get(flag) for flag in
+        self.access = [util.ACCESS_FLAGS_CLASSES[flag] for flag in
                             util.ACCESS_FLAGS_CLASSES if flag & access]
         self.prototype = '%s class %s' % (' '.join(self.access), self.name)
 
@@ -214,8 +213,9 @@ class DvClass():
 
         source.append('%s {\n' % self.prototype)
         for field in self.fields.values():
-            access = [util.ACCESS_FLAGS_FIELDS.get(flag) for flag in
-                util.ACCESS_FLAGS_FIELDS if flag & field.get_access_flags()]
+            field_access_flags = field.get_access_flags()
+            access = [util.ACCESS_FLAGS_FIELDS[flag] for flag in
+                        util.ACCESS_FLAGS_FIELDS if flag & field_access_flags]
             f_type = util.get_type(field.get_descriptor())
             name = field.get_name()
             source.append('    %s %s %s;\n' % (' '.join(access), f_type, name))
@@ -246,8 +246,9 @@ class DvClass():
 
         print '%s {\n' % self.prototype
         for field in self.fields.values():
-            access = [util.ACCESS_FLAGS_FIELDS.get(flag) for flag in
-                util.ACCESS_FLAGS_FIELDS if flag & field.get_access_flags()]
+            field_access_flags = field.get_access_flags()
+            access = [util.ACCESS_FLAGS_FIELDS[flag] for flag in
+                        util.ACCESS_FLAGS_FIELDS if flag & field_access_flags]
             f_type = util.get_type(field.get_descriptor())
             name = field.get_name()
             print '    %s %s %s;\n' % (' '.join(access), f_type, name)
@@ -269,6 +270,8 @@ class DvClass():
 class DvMachine():
     def __init__(self, name):
         vm = auto_vm(name)
+        if vm is None:
+            raise ValueError('Format not recognised: %s' % name)
         self.vma = analysis.uVMAnalysis(vm)
         self.classes = dict((dvclass.get_name(), dvclass)
                             for dvclass in vm.get_classes())
@@ -299,7 +302,7 @@ class DvMachine():
             klass.show_source()
 
     def process_and_show(self):
-        for name, klass in self.classes.iteritems():
+        for name, klass in sorted(self.classes.iteritems()):
             logger.info('Processing class: %s', name)
             if not isinstance(klass, DvClass):
                 klass = DvClass(klass, self.vma)
@@ -312,12 +315,14 @@ sys.setrecursionlimit(5000)
 
 
 def main():
+    # logger.setLevel(logging.DEBUG) for debugging output
+    # comment the line to disable the logging.
     logger.setLevel(logging.INFO)
     console_hdlr = logging.StreamHandler(sys.stdout)
     console_hdlr.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
     logger.addHandler(console_hdlr)
 
-    default_file = 'examples/android/TestsAndroguard/bin/classes.dex'
+    default_file = 'examples/android/TestsAndroguard/bin/TestActivity.apk'
     if len(sys.argv) > 1:
         machine = DvMachine(sys.argv[1])
     else:
@@ -325,7 +330,7 @@ def main():
 
     logger.info('========================')
     logger.info('Classes:')
-    for class_name in machine.get_classes():
+    for class_name in sorted(machine.get_classes()):
         logger.info(' %s', class_name)
     logger.info('========================')
 

@@ -3,18 +3,17 @@
 # Copyright (c) 2012 Geoffroy Gueguen <geoffroy.gueguen@gmail.com>
 # All Rights Reserved.
 #
-# Androguard is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Androguard is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with Androguard.  If not, see <http://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import logging
 from androguard.decompiler.dad.basic_blocks import (Condition,
@@ -36,7 +35,7 @@ def intervals(graph):
         interv_heads: a dict of (header node, interval)
     '''
     interval_graph = Graph()  # graph of intervals
-    heads = set([graph.get_entry()])  # set of header nodes
+    heads = set([graph.entry])  # set of header nodes
     interv_heads = {}  # interv_heads[i] = interval of header i
     processed = dict([(i, False) for i in graph])
     edges = {}
@@ -54,7 +53,7 @@ def intervals(graph):
             change = True
             while change:
                 change = False
-                for node in graph.get_rpo()[1:]:
+                for node in graph.rpo[1:]:
                     if all(p in interv_heads[head] for p in graph.preds(node)):
                         change |= interv_heads[head].add_node(node)
 
@@ -75,10 +74,9 @@ def intervals(graph):
         for head in heads:
             interval_graph.add_edge(interval, interv_heads[head])
 
-    interval_graph.set_entry(graph.get_entry().interval)
-    graph_exit = graph.get_exit()
-    if graph_exit:
-        interval_graph.set_exit(graph_exit.interval)
+    interval_graph.entry = graph.entry.interval
+    if graph.exit:
+        interval_graph.exit = graph.exit.interval
 
     return interval_graph, interv_heads
 
@@ -126,50 +124,46 @@ def mark_loop(graph, start, end, interval):
     latch = end.get_end()
     nodes_in_loop = [head]
     mark_loop_rec(graph, latch, head.num, latch.num, interval, nodes_in_loop)
-    head.set_start_loop()
-    latch.set_end_loop()
-    head.set_latch_node(latch)
+    head.startloop = True
+    head.latch = latch
     return nodes_in_loop
 
 
 def loop_type(start, end, nodes_in_loop):
-    start = start.get_head()
-    end = end.get_end()
-    if end.is_cond():
-        if start.is_cond():
+    if end.type.is_cond:
+        if start.type.is_cond:
             if start.true in nodes_in_loop and start.false in nodes_in_loop:
-                start.set_loop_posttest()
+                start.looptype.is_posttest = True
             else:
-                start.set_loop_pretest()
+                start.looptype.is_pretest = True
         else:
-            start.set_loop_posttest()
+            start.looptype.is_posttest = True
     else:
-        if start.is_cond():
+        if start.type.is_cond:
             if start.true in nodes_in_loop and start.false in nodes_in_loop:
-                start.set_loop_endless()
+                start.looptype.is_endless = True
             else:
-                start.set_loop_pretest()
+                start.looptype.is_pretest = True
         else:
-            start.set_loop_endless()
+            start.looptype.is_endless = True
 
 
 def loop_follow(start, end, nodes_in_loop):
-    head = start.get_head()
     follow = None
-    if start.looptype.pretest():
-        if head.true in nodes_in_loop:
-            follow = head.false
+    if start.looptype.is_pretest:
+        if start.true in nodes_in_loop:
+            follow = start.false
         else:
-            follow = head.true
-    elif start.looptype.posttest():
+            follow = start.true
+    elif start.looptype.is_posttest:
         if end.true in nodes_in_loop:
             follow = end.false
         else:
             follow = end.true
     else:
-        num_next = NotImplemented  # Hack to do: num_next = infinity
+        num_next = float('inf')
         for node in nodes_in_loop:
-            if node.is_cond():
+            if node.type.is_cond:
                 if (node.true.num < num_next
                         and node.true not in nodes_in_loop):
                     follow = node.true
@@ -178,11 +172,11 @@ def loop_follow(start, end, nodes_in_loop):
                         and node.false not in nodes_in_loop):
                     follow = node.false
                     num_next = follow.num
-    head.set_loop_follow(follow)
+    start.follow['loop'] = follow
     for node in nodes_in_loop:
-        node.set_loop_follow(follow)
-    logger.debug('Start of loop %s', head)
-    logger.debug('Follow of loop: %s', head.get_loop_follow())
+        node.follow['loop'] = follow
+    logger.debug('Start of loop %s', start)
+    logger.debug('Follow of loop: %s', start.follow['loop'])
 
 
 def loop_struct(graphs_list, intervals_list):
@@ -195,23 +189,23 @@ def loop_struct(graphs_list, intervals_list):
                 if node.interval is head.interval:
                     lnodes = mark_loop(first_graph, head, node, head.interval)
                     loop_nodes.update(lnodes)
-                    head.get_head().set_loop_nodes(loop_nodes)
+            head.get_head().loop_nodes = loop_nodes
 
 
 def if_struct(graph, idoms):
     unresolved = set()
-    for node in graph.get_rpo()[::-1]:
-        if node.is_cond():
+    for node in graph.post_order():
+        if node.type.is_cond:
             ldominates = []
             for n, idom in idoms.iteritems():
                 if node is idom and len(graph.preds(n)) > 1:
                     ldominates.append(n)
             if len(ldominates) > 0:
                 n = max(ldominates, key=lambda x: x.num)
-                node.set_if_follow(n)
+                node.follow['if'] = n
                 for x in unresolved.copy():
                     if node.num < x.num < n.num:
-                        x.set_if_follow(n)
+                        x.follow['if'] = n
                         unresolved.remove(x)
             else:
                 unresolved.add(node)
@@ -221,7 +215,7 @@ def if_struct(graph, idoms):
 def switch_struct(graph, idoms):
     unresolved = set()
     for node in graph.post_order():
-        if node.is_switch():
+        if node.type.is_switch:
             m = node
             for suc in graph.sucs(node):
                 if idoms[suc] is not node:
@@ -232,9 +226,9 @@ def switch_struct(graph, idoms):
                     ldominates.append(n)
             if len(ldominates) > 0:
                 n = max(ldominates, key=lambda x: x.num)
-                node.set_switch_follow(n)
+                node.follow['switch'] = n
                 for x in unresolved:
-                    x.set_switch_follow(n)
+                    x.follow['switch'] = n
                 unresolved = set()
             else:
                 unresolved.add(node)
@@ -253,7 +247,7 @@ def short_circuit_struct(graph, idom, node_map):
         lpreds.difference_update((node1, node2))
         ldests.difference_update((node1, node2))
 
-        entry = graph.get_entry() in (node1, node2)
+        entry = graph.entry in (node1, node2)
 
         new_name = '%s+%s' % (node1.name, node2.name)
         condition = Condition(node1, node2, is_and, is_not)
@@ -277,7 +271,7 @@ def short_circuit_struct(graph, idom, node_map):
         for dest in ldests:
             graph.add_edge(new_node, node_map.get(dest, dest))
         if entry:
-            graph.set_entry(new_node)
+            graph.entry = new_node
         return new_node
 
     change = True
@@ -285,33 +279,33 @@ def short_circuit_struct(graph, idom, node_map):
         change = False
         done = set()
         for node in graph.post_order():
-            if node.is_cond() and node not in done:
+            if node.type.is_cond and node not in done:
                 then = node.true
                 els = node.false
                 if node in (then, els):
                     continue
-                if then.is_cond() and len(graph.preds(then)) == 1:
+                if then.type.is_cond and len(graph.preds(then)) == 1:
                     if then.false is els:  # node && t
                         change = True
                         merged_node = MergeNodes(node, then, True, False)
-                        merged_node.set_true(then.true)
-                        merged_node.set_false(els)
+                        merged_node.true = then.true
+                        merged_node.false = els
                     elif then.true is els:  # !node || t
                         change = True
                         merged_node = MergeNodes(node, then, False, True)
-                        merged_node.set_true(els)
-                        merged_node.set_false(then.false)
-                elif els.is_cond() and len(graph.preds(els)) == 1:
+                        merged_node.true = els
+                        merged_node.false = then.false
+                elif els.type.is_cond and len(graph.preds(els)) == 1:
                     if els.false is then:  # !node && e
                         change = True
                         merged_node = MergeNodes(node, els, True, True)
-                        merged_node.set_true(els.true)
-                        merged_node.set_false(then)
+                        merged_node.true = els.true
+                        merged_node.false = then
                     elif els.true is then:  # node || e
                         change = True
                         merged_node = MergeNodes(node, els, False, False)
-                        merged_node.set_true(then)
-                        merged_node.set_false(els.false)
+                        merged_node.true = then
+                        merged_node.false = els.false
             done.add(node)
         if change:
             graph.reset_rpo()
@@ -319,14 +313,14 @@ def short_circuit_struct(graph, idom, node_map):
 
 def while_block_struct(graph, node_map):
     change = False
-    for node in graph.get_rpo()[:]:
-        if node.is_start_loop():
+    for node in graph.rpo[:]:
+        if node.startloop:
             change = True
             new_node = LoopBlock(node.name, node)
             node_map[node] = new_node
             new_node.copy_from(node)
 
-            entry = node is graph.get_entry()
+            entry = node is graph.entry
             lpreds = graph.preds(node)
             lsuccs = graph.sucs(node)
 
@@ -336,11 +330,11 @@ def while_block_struct(graph, node_map):
             for suc in lsuccs:
                 graph.add_edge(new_node, node_map.get(suc, suc))
             if entry:
-                graph.set_entry(new_node)
+                graph.entry = new_node
 
-            if node.is_cond():
-                new_node.set_true(node.true)
-                new_node.set_false(node.false)
+            if node.type.is_cond:
+                new_node.true = node.true
+                new_node.false = node.false
 
             graph.add_node(new_node)
             graph.remove_node(node)
@@ -369,16 +363,17 @@ def identify_structures(graph, idoms):
     update_dom(idoms, node_map)
 
     loop_starts = []
-    for node in graph.get_rpo():
+    for node in graph.rpo:
         node.update_attribute_with(node_map)
-        if node.is_start_loop():
+        if node.startloop:
             loop_starts.append(node)
     for node in loop_starts:
         loop_type(node, node.latch, node.loop_nodes)
         loop_follow(node, node.latch, node.loop_nodes)
 
     for node in if_unresolved:
-        follows = [n for n in (node.loop_follow, node.switch_follow) if n]
+        follows = [n for n in (node.follow['loop'],
+                               node.follow['switch']) if n]
         if len(follows) >= 1:
             follow = min(follows, key=lambda x: x.num)
-            node.set_if_follow(follow)
+            node.follow['if'] = follow

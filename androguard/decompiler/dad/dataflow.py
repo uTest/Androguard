@@ -3,20 +3,23 @@
 # Copyright (c) 2012 Geoffroy Gueguen <geoffroy.gueguen@gmail.com>
 # All Rights Reserved.
 #
-# Androguard is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Androguard is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with Androguard.  If not, see <http://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
+import logging
 from androguard.decompiler.dad.util import build_path
+
+
+logger = logging.getLogger('dad.control_flow')
 
 
 def dominance_frontier(graph, immdoms):
@@ -53,14 +56,14 @@ class BasicReachDef(object):
         self.defs = {}
         self.def_to_loc = {}
         # Deal with special entry node
-        entry = graph.get_entry()
+        entry = graph.entry
         self.defs[entry] = {}
         self.A[entry] = set([-1])
         for param in params:
             self.defs[entry][param] = set([-1])
             self.def_to_loc[param] = set([-1])
         # Deal with the other nodes
-        for node in graph.get_rpo():
+        for node in graph.rpo:
             self.A[node] = set()
             self.R[node] = set()
             self.DB[node] = set()
@@ -74,7 +77,7 @@ class BasicReachDef(object):
                 self.DB[node].add(max(values))
 
     def run(self):
-        nodes = self.g.get_rpo()[:]
+        nodes = self.g.rpo[:]
         while nodes:
             node = nodes.pop(0)
             predA = [self.A[p] for p in self.g.preds(node)]
@@ -141,7 +144,7 @@ def dead_code_elimination(graph, du, ud):
     we update the DU & UD chains of its variables to check for further dead
     instructions.
     '''
-    for node in graph.get_rpo():
+    for node in graph.rpo:
         for i, ins in node.get_loc_with_ins()[:]:
             reg = ins.get_lhs()
             if reg is not None:
@@ -151,7 +154,7 @@ def dead_code_elimination(graph, du, ud):
                 # something like an array access, so we do nothing.
                 # Otherwise (no side effect) we can remove the instruction from
                 # the node.
-                if du.get((reg, i), None) is  None:
+                if (reg, i) not in du:
                     if ins.is_call():
                         ins.remove_defined_var()
                     elif ins.has_side_effect():
@@ -169,8 +172,11 @@ def dead_code_elimination(graph, du, ud):
 def clear_path_node(graph, reg, loc1, loc2):
     for loc in xrange(loc1, loc2):
         ins = graph.get_ins_from_loc(loc)
+        logger.debug('  treat loc: %d, ins: %s', loc, ins)
         if ins is None:
             continue
+        logger.debug('  LHS: %s, side_effect: %s', ins.get_lhs(),
+                                                   ins.has_side_effect())
         if ins.get_lhs() == reg or ins.has_side_effect():
             return False
     return True
@@ -183,16 +189,17 @@ def clear_path(graph, reg, loc1, loc2):
     points. We also have to check that the variable `reg` is not redefined
     along one of the possible pathes from loc1 to loc2.
     '''
+    logger.debug('clear_path: reg(%s), loc1(%s), loc2(%s)', reg, loc1, loc2)
     node1 = graph.get_node_from_loc(loc1)
     node2 = graph.get_node_from_loc(loc2)
     # If both instructions are in the same node, we only have to check that the
     # path is clear inside the node
     if node1 is node2:
-        return clear_path_node(graph, reg, loc1, loc2)
+        return clear_path_node(graph, reg, loc1 + 1, loc2)
 
     # If instructions are in different nodes, we also have to check the nodes
     # in the path between the two locations.
-    if not clear_path_node(graph, reg, loc1, node1.ins_range[1]):
+    if not clear_path_node(graph, reg, loc1 + 1, node1.ins_range[1]):
         return False
     path = build_path(graph, node1, node2)
     for node in path:
@@ -217,15 +224,19 @@ def register_propagation(graph, du, ud):
     change = True
     while change:
         change = False
-        for node in graph.get_rpo():
+        for node in graph.rpo:
             for i, ins in node.get_loc_with_ins()[:]:
+                logger.debug('Treating instruction %d: %s', i, ins)
                 # We make sure the ins has not been deleted since the start of
                 # the iteration
                 if ins not in node.get_ins():
+                    logger.debug(' => skip instruction (deleted)')
                     continue
+                logger.debug('  Used vars: %s', ins.get_used_vars())
                 for var in ins.get_used_vars():
                     # Get the list of locations this variable is defined at.
                     locs = ud.get((var, i), ())
+                    logger.debug('    var %s defined in lines %s', var, locs)
                     # If the variable is uniquely defined for this instruction
                     # it may be eligible for propagation.
                     if len(locs) != 1:
@@ -236,17 +247,23 @@ def register_propagation(graph, du, ud):
                     if loc == -1:
                         continue
                     orig_ins = graph.get_ins_from_loc(loc)
+                    logger.debug('     -> %s', orig_ins)
 
+                    logger.debug('     -> DU(%s, %s) = %s', var, loc,
+                                                    du.get((var, loc)))
                     # We only try to propagate constants and definition
                     # points which are used at only one location.
                     if len(du.get((var, loc), ())) > 1:
                         if not orig_ins.get_rhs().is_const():
+                            logger.debug('       => variable has multiple uses'
+                                         ' and is not const => skip')
                             continue
 
                     # We defined some instructions as not propagable.
                     # Actually this is the case only for array creation
                     # (new foo[x])
                     if not orig_ins.is_propagable():
+                        logger.debug('    %s not propagable...', orig_ins)
                         continue
                     # We check that the propagation is safe for all the
                     # variables that are used in the instruction.
@@ -255,13 +272,17 @@ def register_propagation(graph, du, ud):
                     # to its use in the instruction, or if the variable may
                     # be redifined along this path.
                     safe = True
-                    for var2 in orig_ins.get_used_vars():
+                    orig_ins_used_vars = orig_ins.get_used_vars()
+                    logger.debug('    variables used by the original '
+                                 'instruction: %s', orig_ins_used_vars)
+                    for var2 in orig_ins_used_vars:
                         # loc is the location of the defined variable
                         # i is the location of the current instruction
-                        if not clear_path(graph, var2, loc + 1, i):
+                        if not clear_path(graph, var2, loc, i):
                             safe = False
                             break
                     if not safe:
+                        logger.debug('Propagation NOT SAFE')
                         continue
 
                     # We also check that the instruction itself is
@@ -269,11 +290,18 @@ def register_propagation(graph, du, ud):
                     # cannot be propagated if there is another side effect
                     # along the path
                     if orig_ins.has_side_effect():
-                        if not clear_path(graph, None, loc + 1, i):
+                        if not clear_path(graph, None, loc, i):
+                            logger.debug('        %s has side effect and the '
+                                         'path is not clear !', orig_ins)
                             continue
 
+                    logger.debug('     => Modification of the instruction!')
+                    logger.debug('      - BEFORE: %s', ins)
                     ins.modify_rhs(var, orig_ins.get_rhs())
+                    logger.debug('      -> AFTER: %s', ins)
+                    logger.debug('\t UD(%s, %s) : %s', var, i, ud[(var, i)])
                     ud[(var, i)].remove(loc)
+                    logger.debug('\t    -> %s', ud[(var, i)])
                     for var2 in orig_ins.get_used_vars():
                         # We update the UD chain of the variables we
                         # propagate. We also have to take the
@@ -281,12 +309,15 @@ def register_propagation(graph, du, ud):
                         # by the instruction and update the DU chain
                         # with this information.
                         old_ud = ud.get((var2, loc))
+                        logger.debug('\t  ud(%s, %s) = %s', var2, loc, old_ud)
                         # If the instruction use the same variable
                         # multiple times, the second+ time the ud chain
                         # will be None because already treated.
                         if old_ud is None:
                             continue
                         ud.setdefault((var2, i), []).extend(old_ud)
+                        logger.debug('\t  - ud(%s, %s) = %s', var2, i,
+                                                          ud[(var2, i)])
                         ud.pop((var2, loc))
 
                         for def_loc in old_ud:
@@ -294,8 +325,11 @@ def register_propagation(graph, du, ud):
                             du.get((var2, def_loc)).append(i)
 
                     new_du = du.get((var, loc))
+                    logger.debug('\t new_du(%s, %s): %s', var, loc, new_du)
                     new_du.remove(i)
+                    logger.debug('\t    -> %s', new_du)
                     if len(new_du) == 0:
+                        logger.debug('\t  REMOVING INS %d', loc)
                         graph.remove_ins(loc)
                         change = True
 
@@ -325,12 +359,12 @@ def build_def_use(graph, lparams):
 
     # We insert two special nodes : entry & exit, to the graph.
     # This is done to simplify the reaching definition analysis.
-    old_entry = graph.get_entry()
-    old_exit = graph.get_exit()
+    old_entry = graph.entry
+    old_exit = graph.exit
     new_entry = DummyNode('entry')
     graph.add_node(new_entry)
     graph.add_edge(new_entry, old_entry)
-    graph.set_entry(new_entry)
+    graph.entry = new_entry
     if old_exit:
         new_exit = DummyNode('exit')
         graph.add_node(new_exit)
@@ -344,10 +378,10 @@ def build_def_use(graph, lparams):
     graph.remove_node(new_entry)
     if old_exit:
         graph.remove_node(new_exit)
-    graph.set_entry(old_entry)
+    graph.entry = old_entry
 
     UD = {}
-    for node in graph.get_rpo():
+    for node in graph.rpo:
         for i, ins in node.get_loc_with_ins():
             for var in ins.get_used_vars():
                 # var not in analysis.def_to_loc: test that the register

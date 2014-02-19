@@ -1,6 +1,6 @@
 # This file is part of Androguard.
 #
-# Copyright (C) 2012, Anthony Desnos <desnos at t0t0.fr>
+# Copyright (C) 2013, Anthony Desnos <desnos at t0t0.fr>
 # All rights reserved.
 #
 # Androguard is free software: you can redistribute it and/or modify
@@ -60,81 +60,11 @@ def is_setting(key):
     return sublime.load_settings("ag.sublime-settings").has(key)
 
 
-def get_params_info(nb, proto):
-    i_buffer = "# Parameters:\n"
-
-    ret = proto.split(')')
-    params = ret[0][1:].split()
-    if params:
-        i_buffer += "# - local registers: v%d...v%d\n" % (0, nb - len(params) - 1)
-        j = 0
-        for i in xrange(nb - len(params), nb):
-            i_buffer += "# - v%d:%s\n" % (i, dvm.get_type(params[j]))
-            j += 1
-    else:
-        i_buffer += "# local registers: v%d...v%d\n" % (0, nb - 1)
-
-    i_buffer += "#\n# - return:%s\n\n" % dvm.get_type(ret[1])
-
-    return i_buffer
-
-
 def get_bytecodes_class(dex_object, ana_object, class_obj):
     i_buffer = ""
 
     for i in class_obj.get_methods():
-        i_buffer += get_bytecodes_method(dex_object, ana_object, i)
-
-    return i_buffer
-
-
-def get_bytecodes_method(dex_object, ana_object, method):
-    mx = ana_object.get_method(method)
-
-    basic_blocks = mx.basic_blocks.gets()
-    i_buffer = ""
-
-    idx = 0
-    nb = 0
-
-    i_buffer += "# %s->%s%s [access_flags=%s]\n#\n" % (method.get_class_name(), method.get_name(), method.get_descriptor(), method.get_access_flags_string())
-    if method.code != None:
-        i_buffer += get_params_info(method.code.get_registers_size(), method.get_descriptor())
-
-        for i in basic_blocks:
-            bb_buffer = ""
-            ins_buffer = ""
-
-            bb_buffer += "%s : " % (i.name)
-
-            instructions = i.get_instructions()
-            for ins in instructions:
-                ins_buffer += "\t%-8d(%08x) " % (nb, idx)
-                ins_buffer += "%-20s %s" % (ins.get_name(), ins.get_output(idx))
-
-                op_value = ins.get_op_value()
-                if ins == instructions[-1] and i.childs != []:
-                    # packed/sparse-switch
-                    if (op_value == 0x2b or op_value == 0x2c) and len(i.childs) > 1:
-                          values = i.get_special_ins(idx).get_values()
-                          bb_buffer += "[ D:%s " % (i.childs[0][2].name)
-                          bb_buffer += ' '.join("%d:%s" % (values[j], i.childs[j + 1][2].name) for j in range(0, len(i.childs) - 1)) + " ]"
-                    else:
-                        #if len(i.childs) == 2:
-                        #    i_buffer += "%s[ %s%s " % (branch_false_color, i.childs[0][2].name, branch_true_color))
-                        #    print_fct(' '.join("%s" % c[2].name for c in i.childs[1:]) + " ]%s" % normal_color)
-                        #else :
-                        bb_buffer += "[ " + ' '.join("%s" % c[2].name for c in i.childs) + " ]"
-
-                idx += ins.get_length()
-                nb += 1
-
-                ins_buffer += "\n"
-
-            if i.get_exception_analysis() != None:
-              ins_buffer += "\t%s\n" % (i.exception_analysis.show_buff())
-
-            i_buffer += bb_buffer + "\n" + ins_buffer + "\n"
+        i_buffer += dvm.get_bytecodes_method(dex_object, ana_object, i)
 
     return i_buffer
 
@@ -177,10 +107,6 @@ def get_axml_info(apk_object):
     return i_buffer
 
 
-def get_arsc_info(arsc_obj):
-    return "pouet"
-
-
 def get_sourcecode_method(dex_object, ana_object, method):
     return method.get_source()
 
@@ -198,7 +124,7 @@ class MethodView:
         self.view.set_scratch(True)
         edit = self.view.begin_edit()
 
-        i_buffer = get_bytecodes_method(self.dex_object, self.ana_object, method)
+        i_buffer = dvm.get_bytecodes_method(self.dex_object, self.ana_object, method)
         AG_METHOD_ID[self.view.id()] = method
 
         self.view.replace(edit, sublime.Region(0, self.view.size()), i_buffer)
@@ -321,7 +247,7 @@ class AgDoubleClick(sublime_plugin.TextCommand):
                     at = AnalyseAXMLThread(sublime.active_window().new_file(), filename + "-AndroidManifest", apk_object)
                     at.run()
                 elif x == "resources.arsc":
-                    at = AnalyseARSCThread(sublime.active_window().new_file(), filename + "-resources", apk_object)
+                    at = AnalyseARSCThread(sublime.active_window().new_file(), filename + "-resources", apk_object.get_file(x))
                     at.run()
                 elif ".xml" in x:
                     at = AnalyseAXMLSimpleThread(sublime.active_window().new_file(), filename + "-%s" + x, apk_object.get_file(x))
@@ -422,9 +348,9 @@ class AnalyseAXMLSimpleThread:
 
 
 class AnalyseARSCThread:
-    def __init__(self, view, filename, apk_object):
+    def __init__(self, view, filename, raw_object):
         self.view = view
-        self.apk_object = apk_object
+        self.raw_object = raw_object
         self.filename = filename
         #threading.Thread.__init__(self)
 
@@ -436,13 +362,14 @@ class AnalyseARSCThread:
         self.view.sel().clear()
         #self.view.set_syntax_file("Packages/ag-st/agapk.tmLanguage")
 
-        i_buffer = get_arsc_info(self.apk_object.get_android_resources())
+        arscobj = apk.ARSCParser(self.raw_object)
+        i_buffer = apk.get_arsc_info(arscobj)
 
         self.view.replace(edit, sublime.Region(0, self.view.size()), i_buffer)
         self.view.end_edit(edit)
         self.view.set_read_only(True)
 
-        AG_ARSC_ID[self.view.id()] = self.apk_object
+        AG_ARSC_ID[self.view.id()] = arscobj
 
         if self.view.id() not in AG_SC:
             AG_SC[self.view.id()] = False
@@ -578,7 +505,7 @@ class AnalyseDexThread:  # (threading.Thread):
                 b_buffer += "\n"
                 line += 1
 
-        l = dex_object.get_classes_hierarchy()
+        l = dex_object.print_classes_hierarchy()
         h_buffer = ""
         for i in l:
             h_buffer += i + "\n"
@@ -609,7 +536,7 @@ class AgCommand(sublime_plugin.WindowCommand):
         at = AnalyseAXMLSimpleThread(self.window.new_file(), filename, open(filename, "rb").read())
         at.run()
     elif ret == "ARSC":
-        at = AnalyseAXMLSimpleThread(self.window.new_file(), filename, open(filename, "rb").read())
+        at = AnalyseARSCThread(self.window.new_file(), filename, open(filename, "rb").read())
         at.run()
 
     #thread = AnalyseThread(self.window.new_file(), filename, open(filename, "rb").read())
@@ -644,8 +571,8 @@ class AgStrings(sublime_plugin.WindowCommand):
 
         view = sublime.active_window().new_file()
 
-        view.set_name("test.strings")
-        #view.set_syntax_file("Packages/ag-st/agbytecodes.tmLanguage")
+        filename = FILENAMES[self.view.id()]
+        view.set_name("%s.strings" % filename)
 
         view.set_scratch(True)
         edit = view.begin_edit()
@@ -670,7 +597,7 @@ class AgTrCommand(sublime_plugin.WindowCommand):
                 i_buffer = get_sourcecode_method(dex_object, ana_object, AG_METHOD_ID[self.view.id()])
             else:
                 self.view.set_syntax_file("Packages/ag-st/agbytecodes.tmLanguage")
-                i_buffer = get_bytecodes_method(dex_object, ana_object, AG_METHOD_ID[self.view.id()])
+                i_buffer = dvm.get_bytecodes_method(dex_object, ana_object, AG_METHOD_ID[self.view.id()])
 
             self.view.set_read_only(False)
             edit = self.view.begin_edit()

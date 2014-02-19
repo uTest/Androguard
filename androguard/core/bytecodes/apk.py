@@ -3,25 +3,22 @@
 # Copyright (C) 2012, Anthony Desnos <desnos at t0t0.fr>
 # All rights reserved.
 #
-# Androguard is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Androguard is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with Androguard.  If not, see <http://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 
 from androguard.core import bytecode
 from androguard.core import androconf
 from androguard.core.bytecodes.dvm_permissions import DVM_PERMISSIONS
-
-import functools
 
 import StringIO
 from struct import pack, unpack
@@ -30,7 +27,6 @@ from zlib import crc32
 import re
 
 from xml.dom import minidom
-import xml.parsers.expat
 
 # 0: chilkat
 # 1: default python zipfile module
@@ -90,7 +86,7 @@ class ChilkatZip :
         if entry != None :
 
             obj = chilkat.CkByteData()
-            obj.append( buff, len(buff) )
+            obj.append2( buff, len(buff) )
             return entry.ReplaceData( obj )
         return False
 
@@ -191,7 +187,7 @@ class APK:
                 self.axml[i] = AXMLPrinter(self.zip.read(i))
                 try:
                     self.xml[i] = minidom.parseString(self.axml[i].get_buff())
-                except xml.parsers.expat.ExpatError:
+                except:
                     self.xml[i] = None
 
                 if self.xml[i] != None:
@@ -419,9 +415,10 @@ class APK:
 
             :rtype: string
         """
-        for i in self.xml :
-            x = set()
-            y = set()
+        x = set()
+        y = set()
+
+        for i in self.xml:
             for item in self.xml[i].getElementsByTagName("activity") :
                 for sitem in item.getElementsByTagName( "action" ) :
                     val = sitem.getAttribute( "android:name" )
@@ -438,7 +435,7 @@ class APK:
             return self.format_value(z.pop())
         return None
 
-    def get_activities(self) :
+    def get_activities(self):
         """
             Return the android:name attribute of all activities
 
@@ -446,7 +443,7 @@ class APK:
         """
         return self.get_elements("activity", "android:name")
 
-    def get_services(self) :
+    def get_services(self):
         """
             Return the android:name attribute of all services
 
@@ -462,7 +459,7 @@ class APK:
         """
         return self.get_elements("receiver", "android:name")
 
-    def get_providers(self) :
+    def get_providers(self):
         """
             Return the android:name attribute of all providers
 
@@ -470,7 +467,32 @@ class APK:
         """
         return self.get_elements("provider", "android:name")
 
-    def get_permissions(self) :
+    def get_intent_filters(self, category, name):
+        d = {}
+
+        d["action"] = []
+        d["category"] = []
+
+        for i in self.xml:
+            for item in self.xml[i].getElementsByTagName(category):
+                if self.format_value(item.getAttribute("android:name")) == name:
+                    for sitem in item.getElementsByTagName("intent-filter"):
+                        for ssitem in sitem.getElementsByTagName("action"):
+                            if ssitem.getAttribute("android:name") not in d["action"]:
+                                d["action"].append(ssitem.getAttribute("android:name"))
+                        for ssitem in sitem.getElementsByTagName("category"):
+                            if ssitem.getAttribute("android:name") not in d["category"]:
+                                d["category"].append(ssitem.getAttribute("android:name"))
+
+        if not d["action"]:
+            del d["action"]
+
+        if not d["category"]:
+            del d["category"]
+
+        return d
+
+    def get_permissions(self):
         """
             Return permissions
 
@@ -478,7 +500,7 @@ class APK:
         """
         return self.permissions
 
-    def get_details_permissions(self) :
+    def get_details_permissions(self):
         """
             Return permissions with details
 
@@ -496,7 +518,7 @@ class APK:
             try :
                 l[ i ] = DVM_PERMISSIONS["MANIFEST_PERMISSION"][ perm ]
             except KeyError :
-                l[ i ] = [ "dangerous", "Unknown permission from android reference", "Unknown permission from android reference" ]
+                l[ i ] = [ "normal", "Unknown permission from android reference", "Unknown permission from android reference" ]
 
         return l
 
@@ -532,16 +554,15 @@ class APK:
         """
         return self.get_elements( "uses-library", "android:name" )
 
-    def get_certificate(self, filename) :
+    def get_certificate(self, filename):
         """
             Return a certificate object by giving the name in the apk file
         """
         import chilkat
 
         cert = chilkat.CkCert()
-        f = self.get_file( filename )
-        
-        success = cert.LoadFromBinary(f, len(f))
+        f = self.get_file(filename)
+        success = cert.LoadFromBinary2(f, len(f))
 
         return success, cert
 
@@ -557,38 +578,51 @@ class APK:
             :type deleted_files: None or a string
             :type new_files: a dictionnary (key:filename, value:content of the file)
         """
-        if self.zipmodule == 2 :
+        if self.zipmodule == 2:
             from androguard.patch import zipfile
-            zout = zipfile.ZipFile (filename, 'w')
-        else :
+            zout = zipfile.ZipFile(filename, 'w')
+        else:
             import zipfile
-            zout = zipfile.ZipFile (filename, 'w')
+            zout = zipfile.ZipFile(filename, 'w')
 
-
-        for item in self.zip.infolist() :
-           
-            if deleted_files != None :
-                if re.match(deleted_files, item.filename) == None :
-                    if item.filename in new_files :
+        for item in self.zip.infolist():
+            if deleted_files != None:
+                if re.match(deleted_files, item.filename) == None:
+                    if item.filename in new_files:
                         zout.writestr(item, new_files[item.filename])
-                    else :
+                    else:
                         buffer = self.zip.read(item.filename)
                         zout.writestr(item, buffer)
         zout.close()
 
     def get_android_manifest_axml(self):
+        """
+            Return the :class:`AXMLPrinter` object which corresponds to the AndroidManifest.xml file
+
+            :rtype: :class:`AXMLPrinter`
+        """
         try:
             return self.axml["AndroidManifest.xml"]
         except KeyError:
             return None
 
     def get_android_manifest_xml(self):
+        """
+            Return the xml object which corresponds to the AndroidManifest.xml file
+
+            :rtype: object
+        """
         try:
             return self.xml["AndroidManifest.xml"]
         except KeyError:
             return None
 
     def get_android_resources(self):
+        """
+            Return the :class:`ARSCParser` object which corresponds to the resources.arsc file
+
+            :rtype: :class:`ARSCParser`
+        """
         try:
             return self.arsc["resources.arsc"]
         except KeyError:
@@ -598,27 +632,58 @@ class APK:
             except KeyError:
                 return None
 
-    def show(self) :
+    def get_signature_name(self):
+        signature_expr = re.compile("^(META-INF/)(.*)(\.RSA)$")
+        for i in self.get_files():
+            if signature_expr.search(i):
+                return i
+        return None
+
+    def get_signature(self):
+        signature_expr = re.compile("^(META-INF/)(.*)(\.RSA)$")
+        for i in self.get_files():
+            if signature_expr.search(i):
+                return self.get_file(i)
+        return None
+
+    def show(self):
         self.get_files_types()
-        
+
         print "FILES: "
-        for i in self.get_files() :
-            try :
+        for i in self.get_files():
+            try:
                 print "\t", i, self.files[i], "%x" % self.files_crc32[i]
-            except KeyError :
+            except KeyError:
                 print "\t", i, "%x" % self.files_crc32[i]
 
         print "PERMISSIONS: "
         details_permissions = self.get_details_permissions()
-        for i in details_permissions :
+        for i in details_permissions:
             print "\t", i, details_permissions[i]
         print "MAIN ACTIVITY: ", self.get_main_activity()
-        print "ACTIVITIES: ", self.get_activities()
-        print "SERVICES: ", self.get_services()
-        print "RECEIVERS: ", self.get_receivers()
+
+        print "ACTIVITIES: "
+        activities = self.get_activities()
+        for i in activities:
+            filters = self.get_intent_filters("activity", i)
+            print "\t", i, filters or ""
+
+        print "SERVICES: "
+        services = self.get_services()
+        for i in services:
+            filters = self.get_intent_filters("service", i)
+            print "\t", i, filters or ""
+
+        print "RECEIVERS: "
+        receivers = self.get_receivers()
+        for i in receivers:
+            filters = self.get_intent_filters("receiver", i)
+            print "\t", i, filters or ""
+
         print "PROVIDERS: ", self.get_providers()
 
-def show_Certificate(cert) :
+
+def show_Certificate(cert):
     print "Issuer: C=%s, CN=%s, DN=%s, E=%s, L=%s, O=%s, OU=%s, S=%s" % (cert.issuerC(), cert.issuerCN(), cert.issuerDN(), cert.issuerE(), cert.issuerL(), cert.issuerO(), cert.issuerOU(), cert.issuerS())
     print "Subject: C=%s, CN=%s, DN=%s, E=%s, L=%s, O=%s, OU=%s, S=%s" % (cert.subjectC(), cert.subjectCN(), cert.subjectDN(), cert.subjectE(), cert.subjectL(), cert.subjectO(), cert.subjectOU(), cert.subjectS())
 
@@ -766,15 +831,15 @@ ATTRIBUTE_IX_VALUE_TYPE     = 3
 ATTRIBUTE_IX_VALUE_DATA     = 4
 ATTRIBUTE_LENGHT            = 5
 
-CHUNK_AXML_FILE             = 0x00080003
-CHUNK_RESOURCEIDS           = 0x00080180
-CHUNK_XML_FIRST             = 0x00100100
-CHUNK_XML_START_NAMESPACE   = 0x00100100
-CHUNK_XML_END_NAMESPACE     = 0x00100101
-CHUNK_XML_START_TAG         = 0x00100102
-CHUNK_XML_END_TAG           = 0x00100103
-CHUNK_XML_TEXT              = 0x00100104
-CHUNK_XML_LAST              = 0x00100104
+CHUNK_AXML_FILE = 0x00080003
+CHUNK_RESOURCEIDS = 0x00080180
+CHUNK_XML_FIRST = 0x00100100
+CHUNK_XML_START_NAMESPACE = 0x00100100
+CHUNK_XML_END_NAMESPACE = 0x00100101
+CHUNK_XML_START_TAG = 0x00100102
+CHUNK_XML_END_TAG = 0x00100103
+CHUNK_XML_TEXT = 0x00100104
+CHUNK_XML_LAST = 0x00100104
 
 START_DOCUMENT              = 0
 END_DOCUMENT                = 1
@@ -787,19 +852,28 @@ class AXMLParser:
     def __init__(self, raw_buff):
         self.reset()
 
+        self.valid_axml = True
         self.buff = bytecode.BuffHandle(raw_buff)
 
-        self.buff.read(4)
-        self.buff.read(4)
+        axml_file = unpack('<L', self.buff.read(4))[0]
 
-        self.sb = StringBlock(self.buff)
+        if axml_file == CHUNK_AXML_FILE:
+            self.buff.read(4)
 
-        self.m_resourceIDs = []
-        self.m_prefixuri = {}
-        self.m_uriprefix = {}
-        self.m_prefixuriL = []
+            self.sb = StringBlock(self.buff)
 
-        self.visited_ns = []
+            self.m_resourceIDs = []
+            self.m_prefixuri = {}
+            self.m_uriprefix = {}
+            self.m_prefixuriL = []
+
+            self.visited_ns = []
+        else:
+            self.valid_axml = False
+            androconf.warning("Not a valid xml file")
+
+    def is_valid(self):
+        return self.valid_axml
 
     def reset(self):
         self.m_event = -1
@@ -842,7 +916,7 @@ class AXMLParser:
                 chunkSize = unpack('<L', self.buff.read(4))[0]
                 # FIXME
                 if chunkSize < 8 or chunkSize % 4 != 0:
-                    androconf.warning("ooo")
+                    androconf.warning("Invalid chunk size")
 
                 for i in range(0, chunkSize / 4 - 2):
                     self.m_resourceIDs.append(unpack('<L', self.buff.read(4))[0])
@@ -851,7 +925,7 @@ class AXMLParser:
 
             # FIXME
             if chunkType < CHUNK_XML_FIRST or chunkType > CHUNK_XML_LAST:
-                androconf.warning("ooo")
+                androconf.warning("invalid chunk type")
 
             # Fake START_DOCUMENT event.
             if chunkType == CHUNK_XML_START_TAG and event == -1:
@@ -1048,8 +1122,10 @@ FRACTION_UNITS          =   [ "%", "%p" ]
 
 COMPLEX_UNIT_MASK        =   15
 
+
 def complexToFloat(xcomplex):
     return (float)(xcomplex & 0xFFFFFF00) * RADIX_MULTS[(xcomplex >> 4) & 3]
+
 
 class AXMLPrinter:
     def __init__(self, raw_buff):
@@ -1058,7 +1134,7 @@ class AXMLPrinter:
 
         self.buff = u''
 
-        while True:
+        while True and self.axml.is_valid():
             _type = self.axml.next()
 #           print "tagtype = ", _type
 
@@ -1069,18 +1145,18 @@ class AXMLPrinter:
                 self.buff += self.axml.getXMLNS()
 
                 for i in range(0, self.axml.getAttributeCount()):
-                    self.buff += "%s%s=\"%s\"\n" % ( self.getPrefix(
-                        self.axml.getAttributePrefix(i) ), self.axml.getAttributeName(i), self._escape( self.getAttributeValue( i ) ) )
+                    self.buff += "%s%s=\"%s\"\n" % (self.getPrefix(
+                        self.axml.getAttributePrefix(i)), self.axml.getAttributeName(i), self._escape(self.getAttributeValue(i)))
 
                 self.buff += u'>\n'
 
-            elif _type == END_TAG :
-                self.buff += "</%s%s>\n" % ( self.getPrefix( self.axml.getPrefix() ), self.axml.getName() )
+            elif _type == END_TAG:
+                self.buff += "</%s%s>\n" % (self.getPrefix(self.axml.getPrefix()), self.axml.getName())
 
-            elif _type == TEXT :
+            elif _type == TEXT:
                 self.buff += "%s\n" % self.axml.getText()
 
-            elif _type == END_DOCUMENT :
+            elif _type == END_DOCUMENT:
                 break
 
     # pleed patch
@@ -1096,7 +1172,7 @@ class AXMLPrinter:
         return self.buff.encode('utf-8')
 
     def get_xml(self):
-        return minidom.parseString(self.get_buff()).toprettyxml()
+        return minidom.parseString(self.get_buff()).toprettyxml(encoding="utf-8")
 
     def get_xml_obj(self):
         return minidom.parseString(self.get_buff())
@@ -1384,6 +1460,34 @@ class ARSCParser:
             pass
 
         buff += '</resources>\n'
+
+        return buff.encode('utf-8')
+
+    def get_strings_resources(self):
+        self._analyse()
+
+        buff = '<?xml version="1.0" encoding="utf-8"?>\n'
+
+        buff += "<packages>\n"
+        for package_name in self.get_packages_names():
+            buff += "<package name=\"%s\">\n" % package_name
+
+            for locale in self.get_locales(package_name):
+                buff += "<locale value=%s>\n" % repr(locale)
+
+                buff += '<resources>\n'
+                try:
+                    for i in self.values[package_name][locale]["string"]:
+                        buff += '<string name="%s">%s</string>\n' % (i[0], i[1])
+                except KeyError:
+                    pass
+
+                buff += '</resources>\n'
+                buff += '</locale>\n'
+
+            buff += "</package>\n"
+
+        buff += "</packages>\n"
 
         return buff.encode('utf-8')
 
@@ -1676,3 +1780,20 @@ class ARSCResStringPoolRef:
 
     def get_data_type(self):
         return self.data_type
+
+
+def get_arsc_info(arscobj):
+    buff = ""
+    for package in arscobj.get_packages_names():
+        buff += package + ":\n"
+        for locale in arscobj.get_locales(package):
+            buff += "\t" + repr(locale) + ":\n"
+            for ttype in arscobj.get_types(package, locale):
+                buff += "\t\t" + ttype + ":\n"
+                try:
+                    tmp_buff = getattr(arscobj, "get_" + ttype + "_resources")(package, locale).decode("utf-8", 'replace').split("\n")
+                    for i in tmp_buff:
+                        buff += "\t\t\t" + i + "\n"
+                except AttributeError:
+                    pass
+    return buff

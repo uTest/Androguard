@@ -3,22 +3,20 @@
 # Copyright (c) 2012 Geoffroy Gueguen <geoffroy.gueguen@gmail.com>
 # All Rights Reserved.
 #
-# Androguard is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Androguard is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with Androguard.  If not, see <http://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS-IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import logging
 from androguard.decompiler.dad.opcode_ins import INSTRUCTION_SET
-from androguard.decompiler.dad.instruction import Variable
 from androguard.decompiler.dad.node import Node
 
 
@@ -47,7 +45,6 @@ class BasicBlock(Node):
     def add_ins(self, new_ins_list):
         for new_ins in new_ins_list:
             self.ins.append(new_ins)
-        self.ins_range[1] += len(new_ins_list)
 
     def number_ins(self, num):
         last_ins_num = num + len(self.ins)
@@ -59,6 +56,7 @@ class BasicBlock(Node):
 class StatementBlock(BasicBlock):
     def __init__(self, name, block_ins):
         super(StatementBlock, self).__init__(name, block_ins)
+        self.type.is_stmt = True
 
     def visit(self, visitor):
         return visitor.visit_statement_node(self)
@@ -70,6 +68,7 @@ class StatementBlock(BasicBlock):
 class ReturnBlock(BasicBlock):
     def __init__(self, name, block_ins):
         super(ReturnBlock, self).__init__(name, block_ins)
+        self.type.is_return = True
 
     def visit(self, visitor):
         return visitor.visit_return_node(self)
@@ -81,6 +80,7 @@ class ReturnBlock(BasicBlock):
 class ThrowBlock(BasicBlock):
     def __init__(self, name, block_ins):
         super(ThrowBlock, self).__init__(name, block_ins)
+        self.type.is_throw = True
 
     def visit(self, visitor):
         return visitor.visit_throw_node(self)
@@ -96,6 +96,7 @@ class SwitchBlock(BasicBlock):
         self.cases = []
         self.default = None
         self.node_to_case = {}
+        self.type.is_switch = True
 
     def add_case(self, case):
         self.cases.append(case)
@@ -105,8 +106,8 @@ class SwitchBlock(BasicBlock):
 
     def copy_from(self, node):
         super(SwitchBlock, self).copy_from(node)
-        self.cases = node.cases
-        self.switch = node.switch
+        self.cases = node.cases[:]
+        self.switch = node.switch[:]
 
     def update_attribute_with(self, n_map):
         super(SwitchBlock, self).update_attribute_with(n_map)
@@ -131,12 +132,7 @@ class CondBlock(BasicBlock):
         super(CondBlock, self).__init__(name, block_ins)
         self.true = None
         self.false = None
-
-    def set_true(self, node):
-        self.true = node
-
-    def set_false(self, node):
-        self.false = node
+        self.type.is_cond = True
 
     def update_attribute_with(self, n_map):
         super(CondBlock, self).update_attribute_with(n_map)
@@ -144,17 +140,17 @@ class CondBlock(BasicBlock):
         self.false = n_map.get(self.false, self.false)
 
     def neg(self):
-        if len(self.ins) > 1:
-            raise ('Condition should have only 1 instruction !')
-        self.ins[0].neg()
+        if len(self.ins) != 1:
+            raise RuntimeWarning('Condition should have only 1 instruction !')
+        self.ins[-1].neg()
 
     def visit(self, visitor):
         return visitor.visit_cond_node(self)
 
     def visit_cond(self, visitor):
-        if len(self.ins) > 1:
-            raise ('Condition should have only 1 instruction !')
-        return visitor.visit_ins(self.ins[0])
+        if len(self.ins) != 1:
+            raise RuntimeWarning('Condition should have only 1 instruction !')
+        return visitor.visit_ins(self.ins[-1])
 
     def __str__(self):
         return '%d-If(%s)' % (self.num, self.name)
@@ -186,7 +182,7 @@ class Condition(object):
 
     def visit(self, visitor):
         return visitor.visit_short_circuit_condition(self.isnot, self.isand,
-                                             self.cond1, self.cond2)
+                                                     self.cond1, self.cond2)
 
     def __str__(self):
         if self.isnot:
@@ -242,16 +238,15 @@ class LoopBlock(CondBlock):
         self.cond.update_attribute_with(n_map)
 
     def __str__(self):
-        if self.looptype.pretest():
+        if self.looptype.is_pretest:
             if self.false in self.loop_nodes:
                 return '%d-While(!%s)[%s]' % (self.num, self.name, self.cond)
-            else:
-                return '%d-While(%s)[%s]' % (self.num, self.name, self.cond)
-        elif self.looptype.posttest():
+            return '%d-While(%s)[%s]' % (self.num, self.name, self.cond)
+        elif self.looptype.is_posttest:
             return '%d-DoWhile(%s)[%s]' % (self.num, self.name, self.cond)
-        elif self.looptype.endless():
+        elif self.looptype.is_endless:
             return '%d-WhileTrue(%s)[%s]' % (self.num, self.name, self.cond)
-        return '%dWhileNoType(%s)' % (self.num, self.name)
+        return '%d-WhileNoType(%s)' % (self.num, self.name)
 
 
 class TryBlock(BasicBlock):
@@ -275,34 +270,19 @@ class CatchBlock(BasicBlock):
         return 'Catch(%s)' % self.name
 
 
-class GenInvokeRetName(object):
-    def __init__(self):
-        self.num = 0
-        self.ret = None
-
-    def new(self):
-        self.num += 1
-        self.ret = Variable('tmp%d' % self.num)
-        return self.ret
-
-    def set_to(self, ret):
-        self.ret = ret
-
-    def last(self):
-        return self.ret
-
-
 def build_node_from_block(block, vmap, gen_ret):
     ins, lins = None, []
     idx = block.get_start()
     for ins in block.get_instructions():
         opcode = ins.get_op_value()
-        if opcode == 0x1f:  # check-cast
+        # check-cast
+        if opcode in (0x1f, -1):  # FIXME? or opcode in (0x0300, 0x0200, 0x0100):
             idx += ins.get_length()
             continue
-        _ins = INSTRUCTION_SET.get(ins.get_name().lower())
-        if _ins is None:
-            logger.error('Unknown instruction : %s.', _ins.get_name().lower())
+        try:
+            _ins = INSTRUCTION_SET[opcode]
+        except IndexError:
+            exit('Unknown instruction : %s.' % ins.get_name().lower())
         # fill-array-data
         if opcode == 0x26:
             fillaray = block.get_special_ins(idx)
@@ -316,6 +296,10 @@ def build_node_from_block(block, vmap, gen_ret):
         # move-result*
         elif 0xa <= opcode <= 0xc:
             lins.append(_ins(ins, vmap, gen_ret.last()))
+        # monitor-{enter,exit}
+        elif 0x1d <= opcode <= 0x1e:
+            idx += ins.get_length()
+            continue
         else:
             lins.append(_ins(ins, vmap))
         idx += ins.get_length()
@@ -323,26 +307,21 @@ def build_node_from_block(block, vmap, gen_ret):
     # return*
     if 0xe <= opcode <= 0x11:
         node = ReturnBlock(name, lins)
-        node.set_return()
     # {packed,sparse}-switch
     elif 0x2b <= opcode <= 0x2c:
         idx -= ins.get_length()
         values = block.get_special_ins(idx)
         node = SwitchBlock(name, values, lins)
-        node.set_switch()
     # if-test[z]
     elif 0x32 <= opcode <= 0x3d:
         node = CondBlock(name, lins)
-        node.set_cond()
         node.off_last_ins = ins.get_ref_off()
     # throw
     elif opcode == 0x27:
         node = ThrowBlock(name, lins)
-        node.set_throw()
     else:
         # goto*
         if 0x28 <= opcode <= 0x2a:
             lins.pop()
         node = StatementBlock(name, lins)
-        node.set_stmt()
     return node
