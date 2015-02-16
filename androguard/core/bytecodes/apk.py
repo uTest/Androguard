@@ -751,7 +751,7 @@ class StringBlock:
 
             if header == CHUNK_NULL_TYPE and first_run:
                 androconf.info("Skipping null padding in StringBlock header")
-                header = self.readNext(buff, first_run=False)
+                header = readNext(buff, first_run=False)
             elif header != CHUNK_STRINGPOOL_TYPE:
                 androconf.warning("Invalid StringBlock header")
 
